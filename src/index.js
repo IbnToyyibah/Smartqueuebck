@@ -48,6 +48,23 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    message: 'SmartQueue backend is running.',
+  })
+})
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    dbReady,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV || 'development',
+  })
+})
+
 app.use('/api', async (req, res, next) => {
   if (req.path === '/health') return next()
   if (dbReady) return next()
