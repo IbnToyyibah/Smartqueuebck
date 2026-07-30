@@ -42,6 +42,13 @@ const bankingDepts = () => [
   { id: 'complaints', name: 'Complaints', duration: 10, active: true },
 ]
 
+const SEED_USERS = {
+  superAdmin: { email: 'superadmin@smartqueue.com', password: 'superadmin123' },
+  branchAdmin: { email: 'admin@smartqueue.com', password: 'BranchAdmin@123' },
+  staff: { email: 'staff@smartqueue.com', password: 'Staff@123' },
+  customer: { email: 'customer@smartqueue.com', password: 'Customer@123' },
+}
+
 async function seedServices(branchId, services) {
   for (let i = 0; i < services.length; i += 1) {
     const s = services[i]
@@ -141,14 +148,14 @@ async function seed() {
   await seedServices(firstBank.id, bankingDepts())
 
   console.log('Creating users...')
-  const superAdminPw = await bcrypt.hash('SuperAdmin@123', 12)
-  const branchAdminPw = await bcrypt.hash('BranchAdmin@123', 12)
-  const staffPw = await bcrypt.hash('Staff@123', 12)
-  const customerPw = await bcrypt.hash('Customer@123', 12)
+  const superAdminPw = await bcrypt.hash(SEED_USERS.superAdmin.password, 12)
+  const branchAdminPw = await bcrypt.hash(SEED_USERS.branchAdmin.password, 12)
+  const staffPw = await bcrypt.hash(SEED_USERS.staff.password, 12)
+  const customerPw = await bcrypt.hash(SEED_USERS.customer.password, 12)
 
   await insert('users', {
     name: 'Fatima Suleiman',
-    email: 'superadmin@smartqueue.com',
+    email: SEED_USERS.superAdmin.email,
     password: superAdminPw,
     phone: '+2348045678901',
     role: 'super_admin',
@@ -240,10 +247,10 @@ async function seed() {
 
   console.log('\nSeed complete!\n')
   console.log('Branches: Healthcare, Retail, Government, Banking')
-  console.log('Users: superadmin@smartqueue.com / SuperAdmin@123')
-  console.log('       admin@smartqueue.com / BranchAdmin@123')
-  console.log('       staff@smartqueue.com / Staff@123')
-  console.log('       customer@smartqueue.com / Customer@123')
+  console.log(`Users: ${SEED_USERS.superAdmin.email} / ${SEED_USERS.superAdmin.password}`)
+  console.log(`       ${SEED_USERS.branchAdmin.email} / ${SEED_USERS.branchAdmin.password}`)
+  console.log(`       ${SEED_USERS.staff.email} / ${SEED_USERS.staff.password}`)
+  console.log(`       ${SEED_USERS.customer.email} / ${SEED_USERS.customer.password}`)
   console.log(`Seeded branch admin user: ${branchAdmin.email}`)
   console.log('\nRun `npm run dev` to start the server.')
 }
