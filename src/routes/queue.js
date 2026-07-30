@@ -31,7 +31,7 @@ const requireAssignedCounter = async (req, res, counterId) => {
 router.post('/join', optionalAuth, branchActiveCheck, async (req, res, next) => {
   try {
     const { branch_id, service_id, time_slot, name, email, phone, notify_channel } = req.body
-    if (!branch_id || !service_id || !name) {
+    if (!String(branch_id || '').trim() || !String(service_id || '').trim() || !String(name || '').trim()) {
       return res.status(400).json({ message: 'branch_id, service_id, and name are required.' })
     }
 

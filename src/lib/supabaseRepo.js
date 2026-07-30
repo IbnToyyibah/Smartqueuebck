@@ -6,6 +6,8 @@ const db = () => {
   return client
 }
 
+const isBlank = (value) => value === '' || value === null || value === undefined
+
 const queryOne = async (table, queryBuilder) => {
   const { data, error } = await queryBuilder.single()
   if (error) throw error
@@ -13,6 +15,7 @@ const queryOne = async (table, queryBuilder) => {
 }
 
 const findById = async (table, id, columns = '*') => {
+  if (isBlank(id)) return null
   const { data, error } = await db().from(table).select(columns).eq('id', id).single()
   if (error) return null
   return data
@@ -21,6 +24,7 @@ const findById = async (table, id, columns = '*') => {
 const findMany = async (table, { select = '*', filters = [], order = null, limit = null, range = null } = {}) => {
   let q = db().from(table).select(select)
   filters.forEach(([col, op, value]) => {
+    if (isBlank(value)) return
     if (op === 'eq') q = q.eq(col, value)
     if (op === 'in') q = q.in(col, value)
     if (op === 'neq') q = q.neq(col, value)
@@ -43,12 +47,14 @@ const insert = async (table, values, select = '*') => {
 }
 
 const updateById = async (table, id, values, select = '*') => {
+  if (isBlank(id)) return null
   const { data, error } = await db().from(table).update(values).eq('id', id).select(select)
   if (error) throw error
   return Array.isArray(data) ? data[0] : data
 }
 
 const deleteById = async (table, id) => {
+  if (isBlank(id)) return
   const { error } = await db().from(table).delete().eq('id', id)
   if (error) throw error
 }
