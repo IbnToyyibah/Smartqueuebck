@@ -1,5 +1,5 @@
 const express = require('express')
-const { protect, authorize, requireActiveBranch } = require('../middleware/auth')
+const { protect, authorize, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const { findMany, findById, insert, updateById, deleteById } = require('../lib/supabaseRepo')
 
 const router = express.Router()
@@ -90,7 +90,7 @@ router.post('/', protect, authorize('branch_admin', 'super_admin'), async (req, 
   } catch (err) { next(err) }
 })
 
-router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const updates = {}
     ;['name', 'city', 'address', 'phone', 'email', 'max_capacity', 'status', 'category', 'operating_hours', 'notifications', 'billing_details'].forEach((f) => {
@@ -102,7 +102,7 @@ router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireA
   } catch (err) { next(err) }
 })
 
-router.post('/:branchId/services', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.post('/:branchId/services', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const { name, description, duration, is_active, sort_order } = req.body
     if (!name) return res.status(400).json({ message: 'name is required.' })
@@ -121,22 +121,32 @@ router.post('/:branchId/services', protect, authorize('branch_admin', 'super_adm
   }
 })
 
-router.patch('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
+router.patch('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), requireOwnBranch, async (req, res, next) => {
   try {
+    const service = await findById('services', req.params.serviceId)
+    if (!service) return res.status(404).json({ message: 'Service not found.' })
+    if (req.user.role === 'branch_admin' && String(service.branch_id) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only manage services for your own branch.' })
+    }
     const updates = {}
     ;['name', 'description', 'duration', 'is_active', 'sort_order', 'meta'].forEach((f) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f]
     })
-    const service = await updateById('services', req.params.serviceId, updates)
-    if (!service) return res.status(404).json({ message: 'Service not found.' })
-    res.json({ service: mapServiceRow(service) })
+    const updated = await updateById('services', req.params.serviceId, updates)
+    if (!updated) return res.status(404).json({ message: 'Service not found.' })
+    res.json({ service: mapServiceRow(updated) })
   } catch (err) {
     next(err)
   }
 })
 
-router.delete('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
+router.delete('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), requireOwnBranch, async (req, res, next) => {
   try {
+    const service = await findById('services', req.params.serviceId)
+    if (!service) return res.status(404).json({ message: 'Service not found.' })
+    if (req.user.role === 'branch_admin' && String(service.branch_id) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only manage services for your own branch.' })
+    }
     await deleteById('services', req.params.serviceId)
     res.json({ message: 'Service removed.' })
   } catch (err) {
@@ -163,7 +173,7 @@ router.patch('/:id/subscription', protect, authorize('super_admin'), async (req,
   } catch (err) { next(err) }
 })
 
-router.get('/:id/counters', protect, requireActiveBranch, async (req, res, next) => {
+router.get('/:id/counters', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const counters = await findMany('counters', { filters: [['branch', 'eq', req.params.id]] })
     res.json({ counters })

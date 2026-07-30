@@ -1,5 +1,5 @@
 const express = require('express')
-const { protect, authorize, optionalAuth, requireActiveBranch } = require('../middleware/auth')
+const { protect, authorize, optionalAuth, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const branchActiveCheck = require('../middleware/branchActiveCheck')
 const queueSvc = require('../services/queueService')
 const notifySvc = require('../services/notificationService')
@@ -91,7 +91,7 @@ router.get('/history', protect, authorize('customer'), async (req, res, next) =>
   }
 })
 
-router.get('/branch/:branchId', protect, authorize('staff', 'branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.get('/branch/:branchId', protect, authorize('staff', 'branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const { status } = req.query
     const tickets = await queueSvc.getBranchQueue(req.params.branchId, status)
@@ -116,6 +116,11 @@ router.post('/:id/call', protect, authorize('staff', 'branch_admin'), requireAct
     const { counter_id } = req.body
     if (!counter_id) return res.status(400).json({ message: 'counter_id required.' })
     if (!(await requireAssignedCounter(req, res, counter_id))) return
+    const counter = await findById('counters', counter_id)
+    if (!counter) return res.status(404).json({ message: 'Counter not found.' })
+    if (req.user.role === 'branch_admin' && String(counter.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only call tickets from your own branch.' })
+    }
     const branchId = req.user.branch
     const ticket = await queueSvc.callNext(counter_id, branchId)
     if (!ticket) return res.status(200).json({ message: 'No customers waiting.', ticket: null })
@@ -146,6 +151,11 @@ router.post('/:id/serve', protect, authorize('staff', 'branch_admin'), requireAc
   try {
     const { counter_id } = req.body
     if (counter_id && !(await requireAssignedCounter(req, res, counter_id))) return
+    const ticketDoc = await findById('queues', req.params.id)
+    if (!ticketDoc) return res.status(404).json({ message: 'Ticket not found.' })
+    if (req.user.role === 'branch_admin' && String(ticketDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only serve tickets from your own branch.' })
+    }
     const ticket = await queueSvc.markServed(req.params.id, counter_id)
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     emit(req, 'queue:served', ticket)
@@ -169,6 +179,11 @@ router.post('/:id/noshow', protect, authorize('staff', 'branch_admin'), requireA
   try {
     const { counter_id } = req.body
     if (counter_id && !(await requireAssignedCounter(req, res, counter_id))) return
+    const ticketDoc = await findById('queues', req.params.id)
+    if (!ticketDoc) return res.status(404).json({ message: 'Ticket not found.' })
+    if (req.user.role === 'branch_admin' && String(ticketDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only mark no-shows for your own branch.' })
+    }
     const ticket = await queueSvc.markNoShow(req.params.id, counter_id)
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     emit(req, 'queue:noshow', ticket)
@@ -192,6 +207,11 @@ router.post('/:id/transfer', protect, authorize('staff', 'branch_admin'), requir
   try {
     const { to_counter_id } = req.body
     if (!to_counter_id) return res.status(400).json({ message: 'to_counter_id required.' })
+    const ticketDoc = await findById('queues', req.params.id)
+    if (!ticketDoc) return res.status(404).json({ message: 'Ticket not found.' })
+    if (req.user.role === 'branch_admin' && String(ticketDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only transfer tickets from your own branch.' })
+    }
     const ticket = await queueSvc.transferTicket(req.params.id, to_counter_id)
     emit(req, 'queue:transferred', ticket)
     res.json({ ticket })
@@ -216,6 +236,9 @@ router.patch('/:id/rate', protect, authorize('customer'), async (req, res, next)
 
 router.get('/stats/:branchId', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
   try {
+    if (req.user.role === 'branch_admin' && String(req.params.branchId) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only view stats for your own branch.' })
+    }
     const days = Number(req.query.days) || 7
     const from = new Date()
     from.setDate(from.getDate() - days)
@@ -240,6 +263,11 @@ router.post('/:id/checkin', optionalAuth, async (req, res, next) => {
 
 router.post('/:id/skip', protect, authorize('staff', 'branch_admin'), requireActiveBranch, async (req, res, next) => {
   try {
+    const ticketDoc = await findById('queues', req.params.id)
+    if (!ticketDoc) return res.status(404).json({ message: 'Ticket not found.' })
+    if (req.user.role === 'branch_admin' && String(ticketDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only skip tickets from your own branch.' })
+    }
     const ticket = await updateById('queues', req.params.id, { status: 'skipped', counter: null, called_at: null })
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     const updated = await updateById('queues', req.params.id, { status: 'waiting' })
@@ -254,6 +282,11 @@ router.post('/:id/skip', protect, authorize('staff', 'branch_admin'), requireAct
 
 router.post('/:id/recall', protect, authorize('staff', 'branch_admin'), requireActiveBranch, async (req, res, next) => {
   try {
+    const ticketDoc = await findById('queues', req.params.id)
+    if (!ticketDoc) return res.status(404).json({ message: 'Ticket not found.' })
+    if (req.user.role === 'branch_admin' && String(ticketDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only recall tickets from your own branch.' })
+    }
     const ticket = await updateById('queues', req.params.id, { status: 'called', called_at: new Date().toISOString() })
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     const io = req.app.get('io')
