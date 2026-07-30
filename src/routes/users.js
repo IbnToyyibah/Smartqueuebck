@@ -1,6 +1,6 @@
 const express = require('express')
 const bcrypt = require('bcryptjs')
-const { protect, authorize, requireActiveBranch } = require('../middleware/auth')
+const { protect, authorize, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const { findMany, insert, findById, updateById, deleteById } = require('../lib/supabaseRepo')
 
 const router = express.Router()
@@ -23,7 +23,7 @@ router.get('/', protect, authorize('super_admin'), async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-router.get('/branch/:branchId', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.get('/branch/:branchId', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const users = await findMany('users', {
       filters: [['branch', 'eq', req.params.branchId], ['role', 'eq', 'staff']],
@@ -32,7 +32,7 @@ router.get('/branch/:branchId', protect, authorize('branch_admin', 'super_admin'
   } catch (err) { next(err) }
 })
 
-router.post('/', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, async (req, res, next) => {
+router.post('/', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const { name, email, password, phone, role, branch, notify_channel, status } = req.body
     if (!name || !email || !password) return res.status(400).json({ message: 'name, email, password are required.' })
@@ -51,7 +51,7 @@ router.post('/', protect, authorize('super_admin', 'branch_admin'), requireActiv
   } catch (err) { next(err) }
 })
 
-router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, async (req, res, next) => {
+router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const allowed = ['name', 'phone', 'role', 'branch', 'status', 'notify_channel']
     const updates = {}
@@ -71,7 +71,7 @@ router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireA
   } catch (err) { next(err) }
 })
 
-router.delete('/:id', protect, authorize('super_admin'), async (req, res, next) => {
+router.delete('/:id', protect, authorize('super_admin'), requireOwnBranch, async (req, res, next) => {
   try {
     await deleteById('users', req.params.id)
     res.json({ message: 'User removed.' })

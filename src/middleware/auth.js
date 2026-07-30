@@ -79,4 +79,28 @@ const requireActiveBranch = async (req, res, next) => {
   }
 }
 
-module.exports = { protect, authorize, optionalAuth, requireActiveBranch }
+const requireOwnBranch = (req, res, next) => {
+  if (!req.user || req.user.role === 'super_admin') return next()
+
+  const targetBranchId =
+    req.params?.branchId ||
+    req.params?.id ||
+    req.body?.branchId ||
+    req.body?.branch ||
+    req.query?.branchId ||
+    req.query?.branch
+
+  if (!targetBranchId) return next()
+
+  if (req.user.role === 'branch_admin') {
+    if (!req.user.branch || String(req.user.branch) !== String(targetBranchId)) {
+      return res.status(403).json({
+        message: 'You can only manage your own branch.',
+      })
+    }
+  }
+
+  next()
+}
+
+module.exports = { protect, authorize, optionalAuth, requireActiveBranch, requireOwnBranch }

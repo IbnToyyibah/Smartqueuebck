@@ -1,10 +1,10 @@
 const express = require('express')
-const { protect, authorize, requireActiveBranch } = require('../middleware/auth')
+const { protect, authorize, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const { findMany, insert, findById, updateById, deleteById } = require('../lib/supabaseRepo')
 
 const router = express.Router()
 
-router.get('/', protect, requireActiveBranch, async (req, res, next) => {
+router.get('/', protect, authorize('staff', 'branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const filters = []
     if (req.query.branch) filters.push(['branch', 'eq', req.query.branch])
@@ -14,17 +14,25 @@ router.get('/', protect, requireActiveBranch, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-router.post('/', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.post('/', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const { name, branch, agent_id } = req.body
     if (!name || !branch) return res.status(400).json({ message: 'name and branch are required.' })
+    if (req.user.role === 'branch_admin' && String(branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only create counters for your own branch.' })
+    }
     const counter = await insert('counters', { name, branch, agent: agent_id || null, status: 'active' })
     res.status(201).json({ counter })
   } catch (err) { next(err) }
 })
 
-router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
+    const counterDoc = await findById('counters', req.params.id)
+    if (!counterDoc) return res.status(404).json({ message: 'Counter not found.' })
+    if (req.user.role === 'branch_admin' && String(counterDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only manage counters for your own branch.' })
+    }
     const allowed = ['name', 'agent', 'status']
     const updates = {}
     allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f] })
@@ -34,7 +42,7 @@ router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireA
   } catch (err) { next(err) }
 })
 
-router.patch('/:id/toggle', protect, authorize('staff', 'branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.patch('/:id/toggle', protect, authorize('staff', 'branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
     const counter = await findById('counters', req.params.id)
     if (!counter) return res.status(404).json({ message: 'Counter not found.' })
@@ -50,8 +58,13 @@ router.patch('/:id/toggle', protect, authorize('staff', 'branch_admin', 'super_a
   } catch (err) { next(err) }
 })
 
-router.delete('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+router.delete('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
+    const counterDoc = await findById('counters', req.params.id)
+    if (!counterDoc) return res.status(404).json({ message: 'Counter not found.' })
+    if (req.user.role === 'branch_admin' && String(counterDoc.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: 'You can only manage counters for your own branch.' })
+    }
     await deleteById('counters', req.params.id)
     res.json({ message: 'Counter removed.' })
   } catch (err) { next(err) }
