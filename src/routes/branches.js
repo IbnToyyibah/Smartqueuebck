@@ -15,6 +15,7 @@ const DEFAULT_SERVICES = [
   { id: 'consultation', name: 'Medical Consultation', duration: 15, active: true },
   { id: 'document', name: 'Document Processing', duration: 10, active: true },
   { id: 'complaints', name: 'Complaints & Feedback', duration: 10, active: true },
+  { id: 'buying', name: 'Buying', duration: 10, active: true },
 ]
 
 router.get('/', async (req, res, next) => {

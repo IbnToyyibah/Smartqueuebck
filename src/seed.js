@@ -37,6 +37,7 @@ const bankingDepts = () => [
   { id: 'account', name: 'Account Services', duration: 12, active: true },
   { id: 'loans', name: 'Loans & Credit', duration: 20, active: true },
   { id: 'payments', name: 'Payments', duration: 8, active: true },
+  { id: 'buying', name: 'Buying', duration: 10, active: true },
   { id: 'inquiry', name: 'General Inquiry', duration: 8, active: true },
   { id: 'complaints', name: 'Complaints', duration: 10, active: true },
 ]
