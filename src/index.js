@@ -26,11 +26,37 @@ const server = http.createServer(app)
 let dbReady = false
 const dbConnectPromise = connectDB()
 
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173'
+const DEFAULT_CLIENT_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://smartqueues-chi.vercel.app',
+]
+
+const normalizeOrigin = (origin) => origin.trim().replace(/\/+$/, '')
+
+const CLIENT_ORIGINS = (process.env.CLIENT_URLS || process.env.CLIENT_URL || '')
+  .split(',')
+  .map((origin) => normalizeOrigin(origin))
+  .filter(Boolean)
+
+if (!CLIENT_ORIGINS.length) {
+  CLIENT_ORIGINS.push(...DEFAULT_CLIENT_ORIGINS)
+}
+
+const isAllowedOrigin = (origin) => CLIENT_ORIGINS.includes(origin)
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true)
+    if (isAllowedOrigin(normalizeOrigin(origin))) return callback(null, true)
+    return callback(new Error(`CORS blocked for origin: ${origin}`))
+  },
+  credentials: true,
+}
 
 const io = new Server(server, {
   cors: {
-    origin: CLIENT_URL,
+    origin: CLIENT_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -40,10 +66,7 @@ setupSocket(io)
 app.set('io', io)
 
 app.use(helmet())
-app.use(cors({
-  origin: CLIENT_URL,
-  credentials: true,
-}))
+app.use(cors(corsOptions))
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
@@ -179,7 +202,7 @@ const startServer = (port, attempt = 0) => {
     const actualPort = address && typeof address === 'object' ? address.port : port
     publishPort(actualPort)
     console.log(`SmartQueue server running on http://127.0.0.1:${actualPort}`)
-    console.log(`Socket.IO ready - client origin: ${CLIENT_URL}`)
+    console.log(`Socket.IO ready - allowed client origins: ${CLIENT_ORIGINS.join(', ')}`)
     if (actualPort !== Number(PORT)) {
       console.warn(`Requested port ${PORT} was unavailable, so the server switched to ${actualPort}.`)
     }
