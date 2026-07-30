@@ -18,6 +18,12 @@ const DEFAULT_SERVICES = [
   { id: 'buying', name: 'Buying', duration: 10, active: true },
 ]
 
+const normalizeServices = (branch) => {
+  if (!branch) return []
+  const stored = Array.isArray(branch.services) ? branch.services : Array.isArray(branch.services_json) ? branch.services_json : []
+  return stored.map((service) => ({ ...service, id: service.id || service._id }))
+}
+
 router.get('/', async (req, res, next) => {
   try {
     const filters = [['status', 'neq', 'offline']]
@@ -33,6 +39,18 @@ router.get('/:id', async (req, res, next) => {
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
     res.json({ branch })
   } catch (err) { next(err) }
+})
+
+router.get('/:branchId/services', async (req, res, next) => {
+  try {
+    const branch = await findById('branches', req.params.branchId)
+    if (!branch) return res.status(404).json({ message: 'Branch not found.' })
+
+    const services = normalizeServices(branch).filter((service) => service.active !== false)
+    res.json({ services })
+  } catch (err) {
+    next(err)
+  }
 })
 
 router.post('/', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
