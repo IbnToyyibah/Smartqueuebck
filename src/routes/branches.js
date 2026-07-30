@@ -18,10 +18,26 @@ const DEFAULT_SERVICES = [
   { id: 'buying', name: 'Buying', duration: 10, active: true },
 ]
 
-const normalizeServices = (branch) => {
-  if (!branch) return []
-  const stored = Array.isArray(branch.services) ? branch.services : Array.isArray(branch.services_json) ? branch.services_json : []
-  return stored.map((service) => ({ ...service, id: service.id || service._id }))
+const mapServiceRow = (service) => ({
+  ...service,
+  id: service.id || service._id,
+  branchId: service.branch_id,
+  isActive: service.is_active,
+})
+
+const seedDefaultServices = async (branchId, services = DEFAULT_SERVICES) => {
+  for (let i = 0; i < services.length; i += 1) {
+    const service = services[i]
+    await insert('services', {
+      branch_id: branchId,
+      name: service.name,
+      description: service.description || '',
+      duration: service.duration ?? 10,
+      is_active: service.active !== false,
+      sort_order: i,
+      meta: {},
+    })
+  }
 }
 
 router.get('/', async (req, res, next) => {
@@ -45,9 +61,11 @@ router.get('/:branchId/services', async (req, res, next) => {
   try {
     const branch = await findById('branches', req.params.branchId)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
-
-    const services = normalizeServices(branch).filter((service) => service.active !== false)
-    res.json({ services })
+    const services = await findMany('services', {
+      filters: [['branch_id', 'eq', req.params.branchId]],
+      order: { column: 'sort_order', ascending: true },
+    })
+    res.json({ services: services.map(mapServiceRow) })
   } catch (err) {
     next(err)
   }
@@ -65,9 +83,9 @@ router.post('/', protect, authorize('branch_admin', 'super_admin'), async (req, 
       max_capacity: max_capacity || 150,
       subscription_status: req.user.role === 'branch_admin' ? 'trial' : 'active',
       operating_hours: DEFAULT_HOURS,
-      services: DEFAULT_SERVICES,
       ...(billing_details ? { billing_details } : {}),
     })
+    await seedDefaultServices(branch.id)
     res.status(201).json({ branch })
   } catch (err) { next(err) }
 })
@@ -75,13 +93,55 @@ router.post('/', protect, authorize('branch_admin', 'super_admin'), async (req, 
 router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
   try {
     const updates = {}
-    ;['name', 'city', 'address', 'phone', 'email', 'max_capacity', 'status', 'category', 'operating_hours', 'services', 'notifications', 'billing_details'].forEach((f) => {
+    ;['name', 'city', 'address', 'phone', 'email', 'max_capacity', 'status', 'category', 'operating_hours', 'notifications', 'billing_details'].forEach((f) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f]
     })
     const branch = await updateById('branches', req.params.id, updates)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
     res.json({ branch })
   } catch (err) { next(err) }
+})
+
+router.post('/:branchId/services', protect, authorize('branch_admin', 'super_admin'), requireActiveBranch, async (req, res, next) => {
+  try {
+    const { name, description, duration, is_active, sort_order } = req.body
+    if (!name) return res.status(400).json({ message: 'name is required.' })
+    const service = await insert('services', {
+      branch_id: req.params.branchId,
+      name,
+      description: description || '',
+      duration: Number(duration || 10),
+      is_active: is_active !== false,
+      sort_order: Number(sort_order || 0),
+      meta: {},
+    })
+    res.status(201).json({ service: mapServiceRow(service) })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.patch('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
+  try {
+    const updates = {}
+    ;['name', 'description', 'duration', 'is_active', 'sort_order', 'meta'].forEach((f) => {
+      if (req.body[f] !== undefined) updates[f] = req.body[f]
+    })
+    const service = await updateById('services', req.params.serviceId, updates)
+    if (!service) return res.status(404).json({ message: 'Service not found.' })
+    res.json({ service: mapServiceRow(service) })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.delete('/services/:serviceId', protect, authorize('branch_admin', 'super_admin'), async (req, res, next) => {
+  try {
+    await deleteById('services', req.params.serviceId)
+    res.json({ message: 'Service removed.' })
+  } catch (err) {
+    next(err)
+  }
 })
 
 router.delete('/:id', protect, authorize('super_admin'), async (req, res, next) => {

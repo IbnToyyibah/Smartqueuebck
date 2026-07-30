@@ -31,8 +31,11 @@ const recalculatePositions = async (branchId) => {
 const joinQueue = async ({ branchId, userId, name, email, phone, serviceId, timeSlot, notifyChannel }) => {
   const branch = await findById('branches', branchId)
   if (!branch) throw Object.assign(new Error('Branch not found.'), { statusCode: 404 })
-  const services = branch.services || branch.services_json || []
-  const service = services.find((s) => s.id === serviceId && s.active)
+  const services = await findMany('services', {
+    filters: [['branch_id', 'eq', branchId], ['is_active', 'eq', true]],
+    order: { column: 'sort_order', ascending: true },
+  })
+  const service = services.find((s) => s.id === serviceId)
   if (!service) throw Object.assign(new Error('Service not available at this branch.'), { statusCode: 400 })
 
   const ticketNumber = await nextTicketNumber(branchId)
@@ -51,7 +54,13 @@ const joinQueue = async ({ branchId, userId, name, email, phone, serviceId, time
     email: email || '',
     phone: phone || '',
     notify_channel: notifyChannel || 'email',
-    service,
+    service: {
+      id: service.id,
+      name: service.name,
+      description: service.description,
+      duration: service.duration,
+      active: service.is_active,
+    },
     time_slot: timeSlot || 'As soon as possible',
     status: 'waiting',
     position: waiting.length + 1,

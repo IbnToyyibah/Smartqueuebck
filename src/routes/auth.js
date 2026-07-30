@@ -35,6 +35,21 @@ const DEFAULT_SERVICES = [
   { id: 'buying', name: 'Buying', duration: 10, active: true },
 ]
 
+const seedDefaultServices = async (branchId, services = DEFAULT_SERVICES) => {
+  for (let i = 0; i < services.length; i += 1) {
+    const service = services[i]
+    await insert('services', {
+      branch_id: branchId,
+      name: service.name,
+      description: service.description || '',
+      duration: service.duration ?? 10,
+      is_active: service.active !== false,
+      sort_order: i,
+      meta: {},
+    })
+  }
+}
+
 const safeUser = (user) => {
   if (!user) return null
   const copy = { ...user }
@@ -98,13 +113,13 @@ router.post(
           subscription_status: 'trial',
           trial_end_date: trial.trial_ends_at,
           operating_hours: DEFAULT_HOURS,
-          services: DEFAULT_SERVICES,
           billing_details: {
             card_holder: cardHolder,
             card_last4: String(cardNumber || '').slice(-4),
             card_expiry: cardExpiry,
           },
         })
+        await seedDefaultServices(createdBranch.id)
       }
 
       const hashed = await bcrypt.hash(password, 12)
