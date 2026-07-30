@@ -153,7 +153,8 @@ router.post(
       const errors = validationResult(req)
       if (!errors.isEmpty()) return res.status(400).json({ message: errors.array()[0].msg })
 
-      const { email, password } = req.body
+      const email = String(req.body.email || '').trim().toLowerCase()
+      const { password } = req.body
       const users = await findMany('users', { filters: [['email', 'eq', email]], limit: 1 })
       const user = users[0]
 
