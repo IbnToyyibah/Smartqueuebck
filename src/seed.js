@@ -42,6 +42,21 @@ const bankingDepts = () => [
   { id: 'complaints', name: 'Complaints', duration: 10, active: true },
 ]
 
+async function seedServices(branchId, services) {
+  for (let i = 0; i < services.length; i += 1) {
+    const s = services[i]
+    await insert('services', {
+      branch_id: branchId,
+      name: s.name,
+      description: s.description || '',
+      duration: s.duration || 10,
+      is_active: s.active !== false,
+      sort_order: i,
+      meta: {},
+    })
+  }
+}
+
 async function clearTable(table) {
   const rows = await findMany(table, { select: 'id' })
   for (const row of rows) {
@@ -78,8 +93,8 @@ async function seed() {
     subscription_status: 'trial',
     trial_end_date: trialEnd,
     operating_hours: defaultHours(),
-    services: hospitalDepts(),
   })
+  await seedServices(generalHospital.id, hospitalDepts())
 
   const shumadRetail = await insert('branches', {
     name: 'Shumad Global Ventures',
@@ -93,8 +108,8 @@ async function seed() {
     subscription_status: 'active',
     subscription_end_date: yearEnd,
     operating_hours: defaultHours(),
-    services: retailDepts(),
   })
+  await seedServices(shumadRetail.id, retailDepts())
 
   const kwirs = await insert('branches', {
     name: 'KWIRS - Kwara State Internal Revenue Service',
@@ -108,8 +123,8 @@ async function seed() {
     subscription_status: 'active',
     subscription_end_date: yearEnd,
     operating_hours: defaultHours(),
-    services: govDepts(),
   })
+  await seedServices(kwirs.id, govDepts())
 
   const firstBank = await insert('branches', {
     name: 'First Continental Bank Lagos',
@@ -122,8 +137,8 @@ async function seed() {
     category: 'banking',
     subscription_status: 'expired',
     operating_hours: defaultHours(),
-    services: bankingDepts(),
   })
+  await seedServices(firstBank.id, bankingDepts())
 
   console.log('Creating users...')
   const superAdminPw = await bcrypt.hash('SuperAdmin@123', 12)
