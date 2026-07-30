@@ -8,6 +8,9 @@ const branchActiveCheck = async (req, res, next) => {
       req.query?.branchId
 
     if (!branchId) return next()
+    if (typeof branchId === 'string' && !branchId.trim()) {
+      return res.status(400).json({ message: 'branchId is required.' })
+    }
 
     const branch = await findById('branches', branchId)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
