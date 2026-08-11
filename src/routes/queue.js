@@ -11,8 +11,13 @@ const emit = (req, event, data) => {
   const io = req.app.get('io')
   if (!io) return
   const branchId = String(data.branch?.id || data.branch)
-  io.to(branchId).emit(event, data)
-  io.to(`queue:${branchId}`).emit('queue_update', data)
+  if (typeof io.emitToBranch === 'function') {
+    io.emitToBranch(branchId, event, data)
+    return
+  }
+  io.to(`branch:${branchId}`).emit(event, data)
+  io.to(`queue:${branchId}`).emit(event, data)
+  io.to(`queue:${branchId}`).emit('queue:updated', data)
 }
 
 const requireAssignedCounter = async (req, res, counterId) => {
@@ -254,7 +259,13 @@ router.post('/:id/checkin', optionalAuth, async (req, res, next) => {
     const ticket = await updateById('queues', req.params.id, { status: 'checked_in' })
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     const io = req.app.get('io')
-    if (io) io.to(String(ticket.branch)).emit('queue:checkedin', ticket)
+    if (io && typeof io.emitToBranch === 'function') io.emitToBranch(String(ticket.branch), 'queue:checkedin', ticket)
+    else if (io) {
+      const branchId = String(ticket.branch)
+      io.to(`branch:${branchId}`).emit('queue:checkedin', ticket)
+      io.to(`queue:${branchId}`).emit('queue:checkedin', ticket)
+      io.to(`queue:${branchId}`).emit('queue:updated', ticket)
+    }
     res.json({ ticket })
   } catch (err) {
     next(err)
@@ -273,7 +284,13 @@ router.post('/:id/skip', protect, authorize('staff', 'branch_admin'), requireAct
     const updated = await updateById('queues', req.params.id, { status: 'waiting' })
     await queueSvc.recalculatePositions(ticket.branch)
     const io = req.app.get('io')
-    if (io) io.to(String(ticket.branch)).emit('queue:skipped', updated)
+    if (io && typeof io.emitToBranch === 'function') io.emitToBranch(String(ticket.branch), 'queue:skipped', updated)
+    else if (io) {
+      const branchId = String(ticket.branch)
+      io.to(`branch:${branchId}`).emit('queue:skipped', updated)
+      io.to(`queue:${branchId}`).emit('queue:skipped', updated)
+      io.to(`queue:${branchId}`).emit('queue:updated', updated)
+    }
     res.json({ ticket: updated })
   } catch (err) {
     next(err)
@@ -290,7 +307,13 @@ router.post('/:id/recall', protect, authorize('staff', 'branch_admin'), requireA
     const ticket = await updateById('queues', req.params.id, { status: 'called', called_at: new Date().toISOString() })
     if (!ticket) return res.status(404).json({ message: 'Ticket not found.' })
     const io = req.app.get('io')
-    if (io) io.to(String(ticket.branch)).emit('queue:called', ticket)
+    if (io && typeof io.emitToBranch === 'function') io.emitToBranch(String(ticket.branch), 'queue:called', ticket)
+    else if (io) {
+      const branchId = String(ticket.branch)
+      io.to(`branch:${branchId}`).emit('queue:called', ticket)
+      io.to(`queue:${branchId}`).emit('queue:called', ticket)
+      io.to(`queue:${branchId}`).emit('queue:updated', ticket)
+    }
     res.json({ ticket })
   } catch (err) {
     next(err)

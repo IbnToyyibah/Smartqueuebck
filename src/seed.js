@@ -7,6 +7,7 @@ require('dotenv').config()
 const bcrypt = require('bcryptjs')
 const connectDB = require('./config/db')
 const { findMany, deleteById, insert } = require('./lib/supabaseRepo')
+const { getSeedServicesForBranch } = require('./utils/serviceCatalog')
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -49,7 +50,11 @@ const SEED_USERS = {
   customer: { email: 'customer@smartqueue.com', password: 'Customer@123' },
 }
 
-async function seedServices(branchId, services) {
+async function seedServices(branchId, servicesOrBranch) {
+  const services = Array.isArray(servicesOrBranch)
+    ? servicesOrBranch
+    : getSeedServicesForBranch(servicesOrBranch)
+
   for (let i = 0; i < services.length; i += 1) {
     const s = services[i]
     await insert('services', {

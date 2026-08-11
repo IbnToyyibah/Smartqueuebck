@@ -1,59 +1,130 @@
 const QRCode = require('qrcode')
-const { findMany, findById, insert, updateById } = require('../lib/supabaseRepo')
-
-const nextTicketNumber = async (branchId) => {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const tickets = await findMany('queues', {
-    filters: [['branch', 'eq', branchId], ['created_at', 'gte', today.toISOString()]],
-    select: 'id',
-  })
-  const count = tickets.length
-  const letter = String.fromCharCode(65 + (Math.floor(count / 999) % 26))
-  const num = String((count % 999) + 1).padStart(3, '0')
+const { findMany, findById, insert, updateById, allocateNextSequence } = require("../lib/supabaseRepo")
+const DEFAULT_SERVICE_DURATION = 20
+const TICKET_BLOCK = 999
+const LETTERS = 26
+const MAX_RETRIES = 5
+const toSafeNumber = (value, fallback) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+/*
+  Queue Service Module
+  Provides functions to manage queue tickets, including joining the queue,
+  calling the next ticket, marking tickets as served or no-show, transferring tickets,
+  and retrieving branch queue and statistics.
+*/
+function formatTicketNumber(seq) {
+  const letter = String.fromCharCode(65 + (Math.floor((seq - 1) / TICKET_BLOCK) % LETTERS))
+  const num = String(((seq - 1) % TICKET_BLOCK) + 1).padStart(3, '0')
   return `${letter}${num}`
 }
+//This is for the maximum retry
+async function nextTicketNumber(branchId) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+    try {
+      const seq = await allocateNextSequence(branchId)
+      return formatTicketNumber(seq)
+    } catch (err) {
+      if (attempt === 0 && /allocate_queue_sequence/i.test(err?.message || '')) {
+        const existing = await findMany('queues', {
+          filters: [['branch', 'eq', branchId]],
+          select: 'ticket_number',
+        })
 
-const recalculatePositions = async (branchId) => {
+        const maxSeq = existing.reduce((max, ticket) => {
+          const value = String(ticket.ticket_number || ticket.ticketNumber || '')
+          const match = value.match(/^([A-Z])(\d{3})$/)
+          if (!match) return max
+          const letterIndex = match[1].charCodeAt(0) - 65
+          const sequence = letterIndex * TICKET_BLOCK + Number(match[2])
+          return Number.isFinite(sequence) && sequence > max ? sequence : max
+        }, 0)
+
+        return formatTicketNumber(maxSeq + 1)
+      }
+
+      if (attempt === MAX_RETRIES - 1) throw err
+      // small backoff
+      await new Promise((r) => setTimeout(r, 50 * (attempt + 1)))
+    }
+  }
+}
+// Fetch only needed fields and order by created_at
+async function recalculatePositions(branchId) {
   const waiting = await findMany('queues', {
     filters: [['branch', 'eq', branchId], ['status', 'eq', 'waiting']],
     order: { column: 'created_at', ascending: true },
+    select: 'id,service,duration,created_at', // select minimal fields your repo accepts
   })
-  for (let i = 0; i < waiting.length; i += 1) {
-    await updateById('queues', waiting[i].id, {
-      position: i + 1,
-      estimated_wait: (i + 1) * ((waiting[i].service?.duration) || 10),
-    })
-  }
+
+  // Batch updates could be done in parallel but avoid overwhelming DB
+  const updates = waiting.map((row, idx) => {
+    const position = idx + 1
+    const serviceDuration = toSafeNumber(row.service && row.service.duration, DEFAULT_SERVICE_DURATION)
+    const estimated_wait = position * serviceDuration
+    return updateById('queues', row.id, { position, estimated_wait })
+  })
+
+  await Promise.all(updates)
   return waiting.length
 }
 
-const joinQueue = async ({ branchId, userId, name, email, phone, serviceId, timeSlot, notifyChannel }) => {
+async function joinQueue({
+  branchId,
+  userId = null,
+  name,
+  email = '',
+  phone = '',
+  serviceId,
+  timeSlot = 'As soon as possible',
+  notifyChannel = 'email',
+}) {
+  if (!branchId || !serviceId || !name) {
+    throw Object.assign(new Error('Missing required fields: branchId, serviceId, name'), { statusCode: 400 })
+  }
+
   const branch = await findById('branches', branchId)
   if (!branch) throw Object.assign(new Error('Branch not found.'), { statusCode: 404 })
+
   const services = await findMany('services', {
     filters: [['branch_id', 'eq', branchId], ['is_active', 'eq', true]],
     order: { column: 'sort_order', ascending: true },
   })
-  const service = services.find((s) => s.id === serviceId)
+
+  const service = services
+    .map((service) => ({
+      id: service.id,
+      name: service.name,
+      description: service.description || '',
+      duration: service.duration ?? DEFAULT_SERVICE_DURATION,
+      active: service.is_active !== false,
+    }))
+    .find((s) => String(s.id) === String(serviceId) && s.active !== false)
   if (!service) throw Object.assign(new Error('Service not available at this branch.'), { statusCode: 400 })
 
+  // allocate ticket number safely
   const ticketNumber = await nextTicketNumber(branchId)
+
+  // compute estimated wait using count query when possible (avoid selecting rows)
   const waiting = await findMany('queues', {
     filters: [['branch', 'eq', branchId], ['status', 'eq', 'waiting']],
     select: 'id',
   })
-  const estimatedWait = (waiting.length + 1) * (service.duration || 10)
+  const estimatedWait = (waiting.length + 1) * toSafeNumber(service.duration, DEFAULT_SERVICE_DURATION)
+
+  // generate QR
   const qrCode = await QRCode.toDataURL(JSON.stringify({ ticketNumber, branchId, serviceId }))
 
-  const ticket = await insert('queues', {
+  // insert ticket
+  const newTicket = {
     ticket_number: ticketNumber,
     branch: branchId,
-    user: userId || null,
+    user: userId,
     name,
-    email: email || '',
-    phone: phone || '',
-    notify_channel: notifyChannel || 'email',
+    email,
+    phone,
+    notify_channel: notifyChannel,
     service: {
       id: service.id,
       name: service.name,
@@ -61,35 +132,42 @@ const joinQueue = async ({ branchId, userId, name, email, phone, serviceId, time
       duration: service.duration,
       active: service.is_active,
     },
-    time_slot: timeSlot || 'As soon as possible',
+    time_slot: timeSlot,
     status: 'waiting',
     position: waiting.length + 1,
     estimated_wait: estimatedWait,
     qr_code: qrCode,
-  })
+    created_at: new Date().toISOString(),
+  }
 
-  return { ...ticket, branch }
+  const inserted = await insert('queues', newTicket)
+  return { ...inserted, branch }
 }
 
-const callNext = async (counterId, branchId) => {
+async function callNext(counterId, branchId) {
   const waiting = await findMany('queues', {
     filters: [['branch', 'eq', branchId], ['status', 'eq', 'waiting']],
     order: { column: 'created_at', ascending: true },
     limit: 1,
   })
-  const nextTicket = waiting[0]
+
+  const nextTicket = waiting && waiting[0]
   if (!nextTicket) return null
+
+  const now = new Date().toISOString()
   const ticket = await updateById('queues', nextTicket.id, {
     status: 'called',
-    called_at: new Date().toISOString(),
+    called_at: now,
     counter: counterId,
   })
+
   await updateById('counters', counterId, { serving: ticket.id })
+  // recalc positions asynchronously 
   await recalculatePositions(branchId)
   return ticket
 }
 
-const markServed = async (ticketId, counterId) => {
+async function markServed(ticketId, counterId) {
   const ticket = await updateById('queues', ticketId, {
     status: 'served',
     served_at: new Date().toISOString(),
@@ -99,7 +177,7 @@ const markServed = async (ticketId, counterId) => {
   return ticket
 }
 
-const markNoShow = async (ticketId, counterId) => {
+async function markNoShow(ticketId, counterId) {
   const ticket = await updateById('queues', ticketId, {
     status: 'noshow',
     no_show_at: new Date().toISOString(),
@@ -109,22 +187,45 @@ const markNoShow = async (ticketId, counterId) => {
   return ticket
 }
 
-const transferTicket = async (ticketId, toCounterId) => updateById('queues', ticketId, { counter: toCounterId })
+async function transferTicket(ticketId, toCounterId) {
+  return updateById('queues', ticketId, { counter: toCounterId })
+}
 
-const getBranchQueue = async (branchId, statusFilter) => {
+async function getBranchQueue(branchId, statusFilter) {
   const filters = [['branch', 'eq', branchId]]
   if (statusFilter) filters.push(['status', 'eq', statusFilter])
   return findMany('queues', { filters, order: { column: 'created_at', ascending: true } })
 }
 
-const getBranchStats = async (branchId, fromDate) => {
-  const tickets = await findMany('queues', {
-    filters: [['branch', 'eq', branchId], ...(fromDate ? [['created_at', 'gte', fromDate.toISOString()]] : [])],
-  })
+async function getBranchStats(branchId, fromDate) {
+  const filters = [['branch', 'eq', branchId]]
+  if (fromDate) filters.push(['created_at', 'gte', fromDate.toISOString()])
+  const tickets = await findMany('queues', { filters, select: 'status,served_at,no_show_at,created_at' })
   const totalServed = tickets.filter((t) => t.status === 'served').length
   const totalNoShow = tickets.filter((t) => t.status === 'noshow').length
   const totalTickets = tickets.length
-  return { totalServed, totalNoShow, totalTickets, avgWaitTime: 0 }
+  // Optionally calculate avg wait: use served_at - created_at where available
+  const servedTickets = tickets.filter((t) => t.status === 'served' && t.served_at && t.created_at)
+  const avgWaitTime =
+    servedTickets.length > 0
+      ? Math.round(
+        servedTickets.reduce((acc, t) => acc + (new Date(t.served_at) - new Date(t.created_at)), 0) /
+        servedTickets.length /
+        1000,
+      ) // seconds
+      : 0
+
+  return { totalServed, totalNoShow, totalTickets, avgWaitTime }
 }
 
-module.exports = { joinQueue, callNext, markServed, markNoShow, transferTicket, getBranchQueue, getBranchStats, recalculatePositions, nextTicketNumber }
+module.exports = {
+  joinQueue,
+  callNext,
+  markServed,
+  markNoShow,
+  transferTicket,
+  getBranchQueue,
+  getBranchStats,
+  recalculatePositions,
+  nextTicketNumber,
+}
