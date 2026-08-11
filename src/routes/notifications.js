@@ -4,11 +4,15 @@ const { findMany, updateById, deleteById, findById } = require('../lib/supabaseR
 const notifySvc = require('../services/notificationService')
 
 const router = express.Router()
+const toPositiveInt = (value, fallback) => {
+  const n = Number.parseInt(value, 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
 
 router.get('/', protect, async (req, res, next) => {
   try {
-    const page = Number(req.query.page || 1)
-    const limit = Number(req.query.limit || 20)
+    const page = toPositiveInt(req.query.page, 1)
+    const limit = toPositiveInt(req.query.limit, 20)
     const notifications = await findMany('notifications', {
       filters: [['user', 'eq', req.user.id]],
       order: { column: 'created_at', ascending: false },

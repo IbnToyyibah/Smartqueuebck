@@ -1,22 +1,17 @@
 const express = require('express')
 const { protect, authorize, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const { findMany, findById, insert, updateById, deleteById } = require('../lib/supabaseRepo')
+const { DEFAULT_SERVICES, getSeedServicesForBranch, normalizeServices } = require('../utils/serviceCatalog')
 
 const router = express.Router()
+const toSafeNumber = (value, fallback) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
 
 const DEFAULT_HOURS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(
   (day) => ({ day, open: day !== 'Sunday', from: '08:00', to: '17:00' })
 )
-
-const DEFAULT_SERVICES = [
-  { id: 'general', name: 'General Inquiry', duration: 8, active: true },
-  { id: 'account', name: 'Account Services', duration: 12, active: true },
-  { id: 'loans', name: 'Loans & Credit', duration: 20, active: true },
-  { id: 'consultation', name: 'Medical Consultation', duration: 15, active: true },
-  { id: 'document', name: 'Document Processing', duration: 10, active: true },
-  { id: 'complaints', name: 'Complaints & Feedback', duration: 10, active: true },
-  { id: 'buying', name: 'Buying', duration: 10, active: true },
-]
 
 const mapServiceRow = (service) => ({
   ...service,
@@ -24,6 +19,36 @@ const mapServiceRow = (service) => ({
   branchId: service.branch_id,
   isActive: service.is_active,
 })
+
+const syncBranchServices = async (branch) => {
+  const source = getSeedServicesForBranch(branch)
+  if (!source.length) return []
+
+  const existing = await findMany('services', {
+    filters: [['branch_id', 'eq', branch.id]],
+  })
+
+  if (existing.length > 0) return existing
+
+  await Promise.all(
+    source.map((service, index) =>
+      insert('services', {
+        branch_id: branch.id,
+        name: service.name,
+        description: service.description,
+        duration: service.duration,
+        is_active: service.is_active,
+        sort_order: service.sort_order ?? index,
+        meta: service.meta || {},
+      })
+    )
+  )
+
+  return findMany('services', {
+    filters: [['branch_id', 'eq', branch.id]],
+    order: { column: 'sort_order', ascending: true },
+  })
+}
 
 const seedDefaultServices = async (branchId, services = DEFAULT_SERVICES) => {
   for (let i = 0; i < services.length; i += 1) {
@@ -61,10 +86,7 @@ router.get('/:branchId/services', async (req, res, next) => {
   try {
     const branch = await findById('branches', req.params.branchId)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
-    const services = await findMany('services', {
-      filters: [['branch_id', 'eq', req.params.branchId]],
-      order: { column: 'sort_order', ascending: true },
-    })
+    const services = await syncBranchServices(branch)
     res.json({ services: services.map(mapServiceRow) })
   } catch (err) {
     next(err)
@@ -80,7 +102,7 @@ router.post('/', protect, authorize('branch_admin', 'super_admin'), async (req, 
       phone: phone || '',
       email: email || '',
       category: category || 'other',
-      max_capacity: max_capacity || 150,
+      max_capacity: toSafeNumber(max_capacity, 150),
       subscription_status: req.user.role === 'branch_admin' ? 'trial' : 'active',
       operating_hours: DEFAULT_HOURS,
       ...(billing_details ? { billing_details } : {}),
@@ -110,9 +132,9 @@ router.post('/:branchId/services', protect, authorize('branch_admin', 'super_adm
       branch_id: req.params.branchId,
       name,
       description: description || '',
-      duration: Number(duration || 10),
+      duration: toSafeNumber(duration, 10),
       is_active: is_active !== false,
-      sort_order: Number(sort_order || 0),
+      sort_order: toSafeNumber(sort_order, 0),
       meta: {},
     })
     res.status(201).json({ service: mapServiceRow(service) })

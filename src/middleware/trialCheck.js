@@ -1,8 +1,3 @@
-/**
- * trialCheck — blocks branch_admin access when the 14-day trial has expired
- * and the account is not subscribed.
- * Attach after `protect` on any branch_admin route.
- */
 const trialCheck = (req, res, next) => {
   const u = req.user
   if (!u || u.role !== 'branch_admin') return next()

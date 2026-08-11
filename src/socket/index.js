@@ -3,7 +3,7 @@ const { findById } = require('../lib/supabaseRepo')
 
 module.exports = (io) => {
   const getBranchRoom = (branchId) => `branch:${branchId}`
-  const getQueueRoom = (queueId) => `queue:${queueId}`
+  const getBranchQueueRoom = (branchId) => `queue:${branchId}`
 
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token
@@ -29,23 +29,23 @@ module.exports = (io) => {
     socket.on('join:branch', ({ branchId }) => {
       if (!branchId) return
       socket.join(getBranchRoom(branchId))
-      socket.join(getQueueRoom(branchId))
+      socket.join(getBranchQueueRoom(branchId))
     })
 
     socket.on('leave:branch', ({ branchId }) => {
       if (!branchId) return
       socket.leave(getBranchRoom(branchId))
-      socket.leave(getQueueRoom(branchId))
+      socket.leave(getBranchQueueRoom(branchId))
     })
 
-    socket.on('join_queue', (queueId) => {
+    socket.on('join:queue', (queueId) => {
       if (!queueId) return
-      socket.join(getQueueRoom(queueId))
+      socket.join(getBranchQueueRoom(queueId))
     })
 
-    socket.on('leave_queue', (queueId) => {
+    socket.on('leave:queue', (queueId) => {
       if (!queueId) return
-      socket.leave(getQueueRoom(queueId))
+      socket.leave(getBranchQueueRoom(queueId))
     })
 
     socket.on('join:user', ({ userId: uid }) => {
@@ -56,7 +56,8 @@ module.exports = (io) => {
 
   io.emitToBranch = (branchId, event, data) => {
     io.to(getBranchRoom(branchId)).emit(event, data)
-    io.to(getQueueRoom(branchId)).emit('queue_update', data)
+    io.to(getBranchQueueRoom(branchId)).emit(event, data)
+    io.to(getBranchQueueRoom(branchId)).emit('queue:updated', data)
   }
 
   io.emitToUser = (userId, event, data) => {

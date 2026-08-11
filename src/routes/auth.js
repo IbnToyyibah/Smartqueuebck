@@ -5,6 +5,7 @@ const { body, validationResult } = require('express-validator')
 const { findMany, insert, updateById } = require('../lib/supabaseRepo')
 const { protect } = require('../middleware/auth')
 const { BRANCH_INACTIVE_MESSAGE, isBranchActive } = require('../utils/branchSubscription')
+const { DEFAULT_SERVICES } = require('../utils/serviceCatalog')
 
 const router = express.Router()
 
@@ -24,16 +25,6 @@ const sendToken = (user, statusCode, res) => {
 const DEFAULT_HOURS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(
   (day) => ({ day, open: day !== 'Sunday', from: '08:00', to: '17:00' })
 )
-
-const DEFAULT_SERVICES = [
-  { id: 'general', name: 'General Inquiry', duration: 8, active: true },
-  { id: 'account', name: 'Account Services', duration: 12, active: true },
-  { id: 'loans', name: 'Loans & Credit', duration: 20, active: true },
-  { id: 'consultation', name: 'Medical Consultation', duration: 15, active: true },
-  { id: 'document', name: 'Document Processing', duration: 10, active: true },
-  { id: 'complaints', name: 'Complaints & Feedback', duration: 10, active: true },
-  { id: 'buying', name: 'Buying', duration: 10, active: true },
-]
 
 const seedDefaultServices = async (branchId, services = DEFAULT_SERVICES) => {
   for (let i = 0; i < services.length; i += 1) {
