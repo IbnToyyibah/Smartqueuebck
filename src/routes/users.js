@@ -67,12 +67,25 @@ router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireA
     }
     const user = await updateById('users', req.params.id, updates)
     if (!user) return res.status(404).json({ message: 'User not found.' })
+
+    // If user was suspended or role/branch changed, immediately revoke active socket sessions!
+    if (updates.status === 'suspended' || updates.role || updates.branch) {
+      const io = req.app.get('io')
+      if (io && typeof io.revokeUserSockets === 'function') {
+        io.revokeUserSockets(req.params.id)
+      }
+    }
+
     res.json({ user: safeUser(user) })
   } catch (err) { next(err) }
 })
 
 router.delete('/:id', protect, authorize('super_admin'), requireOwnBranch, async (req, res, next) => {
   try {
+    const io = req.app.get('io')
+    if (io && typeof io.revokeUserSockets === 'function') {
+      io.revokeUserSockets(req.params.id)
+    }
     await deleteById('users', req.params.id)
     res.json({ message: 'User removed.' })
   } catch (err) { next(err) }

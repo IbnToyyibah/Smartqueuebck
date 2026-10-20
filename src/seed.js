@@ -122,7 +122,6 @@ async function seed() {
     operating_hours: defaultHours(),
   })
   await seedServices(shumadRetail.id, retailDepts())
-
   const kwirs = await insert('branches', {
     name: 'KWIRS - Kwara State Internal Revenue Service',
     city: 'Ilorin',
@@ -137,7 +136,6 @@ async function seed() {
     operating_hours: defaultHours(),
   })
   await seedServices(kwirs.id, govDepts())
-
   const firstBank = await insert('branches', {
     name: 'First Continental Bank Lagos',
     city: 'Lagos',
