@@ -162,7 +162,7 @@ async function callNext(counterId, branchId) {
   })
 
   await updateById('counters', counterId, { serving: ticket.id })
-  // recalc positions asynchronously 
+  // recalculate positions asynchronously
   await recalculatePositions(branchId)
   return ticket
 }

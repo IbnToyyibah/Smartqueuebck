@@ -54,8 +54,9 @@ router.post('/join', optionalAuth, branchActiveCheck, async (req, res, next) => 
     emit(req, 'queue:joined', ticket)
 
     if (req.user || email) {
+      const ticketNumber = ticket.ticket_number || ticket.ticketNumber
       const tpl = notifySvc.templates.ticketConfirmed({
-        ticketNumber: ticket.ticket_number || ticket.ticketNumber,
+        ticketNumber,
         estimatedWait: ticket.estimated_wait || ticket.estimatedWait,
         branchName: ticket.branch?.name || '',
         serviceName: ticket.service?.name || ticket.service?.label || '',
@@ -68,6 +69,17 @@ router.post('/join', optionalAuth, branchActiveCheck, async (req, res, next) => 
           email: email || req.user.email,
           phone: phone || req.user.phone,
         })
+      } else {
+        // Guests do not have a notification record, but they should still
+        // receive the same ticket confirmation at the email they supplied.
+        const emailResult = await notifySvc.sendEmail({
+          to: email,
+          subject: `SmartQueue - ${tpl.title}`,
+          text: tpl.message,
+        })
+        if (emailResult.error || emailResult.skipped) {
+          console.error(`[notification] Guest ticket email was not sent to ${email}: ${emailResult.error || 'Email delivery is not configured.'}`)
+        }
       }
     }
 
@@ -101,6 +113,35 @@ router.get('/branch/:branchId', protect, authorize('staff', 'branch_admin', 'sup
     const { status } = req.query
     const tickets = await queueSvc.getBranchQueue(req.params.branchId, status)
     res.json({ tickets })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Public, read-only data for lobby displays. Keep customer contact details private.
+router.get('/display/:branchId', async (req, res, next) => {
+  try {
+    const branch = await findById('branches', req.params.branchId, 'id,name,city,status')
+    if (!branch) return res.status(404).json({ message: 'Branch not found.' })
+
+    const [tickets, counters] = await Promise.all([
+      queueSvc.getBranchQueue(req.params.branchId),
+      findMany('counters', { filters: [['branch', 'eq', req.params.branchId]], select: 'id,name,status' }),
+    ])
+    const counterNames = new Map(counters.map((counter) => [String(counter.id), counter.name]))
+    const visibleTickets = tickets
+      .filter((ticket) => ['called', 'serving', 'waiting'].includes(ticket.status))
+      .map((ticket) => ({
+        id: ticket.id,
+        ticket_number: ticket.ticket_number || ticket.ticketNumber,
+        status: ticket.status,
+        position: ticket.position,
+        service: ticket.service?.name || ticket.service?.label || 'General service',
+        counter: counterNames.get(String(ticket.counter)) || null,
+        called_at: ticket.called_at || null,
+      }))
+
+    res.json({ branch, tickets: visibleTickets, updated_at: new Date().toISOString() })
   } catch (err) {
     next(err)
   }
@@ -322,8 +363,23 @@ router.post('/:id/recall', protect, authorize('staff', 'branch_admin'), requireA
 
 router.get('/lookup/:ticketNumber', async (req, res, next) => {
   try {
-    const tickets = await queueSvc.getBranchQueue(req.query.branchId || req.user?.branch || '')
-    const ticket = tickets.find((t) => String(t.ticket_number || t.ticketNumber).toUpperCase() === req.params.ticketNumber.toUpperCase())
+    // If branchId is provided, search that branch; otherwise search all branches
+    if (req.query.branchId) {
+      const tickets = await queueSvc.getBranchQueue(req.query.branchId)
+      const ticket = tickets.find((t) => String(t.ticket_number || t.ticketNumber).toUpperCase() === req.params.ticketNumber.toUpperCase())
+      if (!ticket) return res.status(404).json({ message: 'Ticket not found or already served.' })
+      return res.json({ ticket })
+    }
+
+    // Search across all tickets by querying the queues table directly
+    const { findMany } = require('../lib/supabaseRepo')
+    const allTickets = await findMany('queues', {
+      select: '*',
+      order: { column: 'created_at', ascending: false },
+      limit: 1000, // reasonable limit to avoid fetching too many
+    })
+
+    const ticket = allTickets.find((t) => String(t.ticket_number || t.ticketNumber).toUpperCase() === req.params.ticketNumber.toUpperCase())
     if (!ticket) return res.status(404).json({ message: 'Ticket not found or already served.' })
     res.json({ ticket })
   } catch (err) {

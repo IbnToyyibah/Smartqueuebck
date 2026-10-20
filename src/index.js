@@ -48,7 +48,12 @@ const isAllowedOrigin = (origin) => CLIENT_ORIGINS.includes(origin)
 const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true)
-    if (isAllowedOrigin(normalizeOrigin(origin))) return callback(null, true)
+    const norm = normalizeOrigin(origin)
+    if (isAllowedOrigin(norm)) return callback(null, true)
+    // Allow any localhost/127.0.0.1 origin during development (handles varying dev ports)
+    if (process.env.NODE_ENV !== 'production' && /localhost|127\.0\.0\.1/.test(norm)) {
+      return callback(null, true)
+    }
     return callback(new Error(`CORS blocked for origin: ${origin}`))
   },
   credentials: true,
@@ -56,7 +61,16 @@ const corsOptions = {
 
 const io = new Server(server, {
   cors: {
-    origin: CLIENT_ORIGINS,
+    // Mirror the express CORS behavior so socket connections from dev ports are allowed
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true)
+      const norm = normalizeOrigin(origin)
+      if (isAllowedOrigin(norm)) return callback(null, true)
+      if (process.env.NODE_ENV !== 'production' && /localhost|127\.0\.0\.1/.test(norm)) {
+        return callback(null, true)
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`))
+    },
     methods: ['GET', 'POST'],
     credentials: true,
   },

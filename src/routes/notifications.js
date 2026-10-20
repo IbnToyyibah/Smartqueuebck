@@ -83,8 +83,11 @@ router.post('/send-ticket/:ticketId', protect, async (req, res, next) => {
     }
 
     res.status(201).json({
-      message: 'Notification sent.',
+      message: notification.channels?.email?.sent === false && (channel === 'email' || channel === 'both')
+        ? 'Notification was saved, but the email was not delivered.'
+        : 'Notification sent.',
       channel,
+      delivery: notification.channels,
       ticket: {
         _id: ticket.id,
         ticketNumber: ticket.ticket_number,

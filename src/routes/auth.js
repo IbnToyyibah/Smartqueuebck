@@ -2,10 +2,12 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 const bcrypt = require('bcryptjs')
 const { body, validationResult } = require('express-validator')
-const { findMany, insert, updateById } = require('../lib/supabaseRepo')
+const { findMany, findById, insert, updateById } = require('../lib/supabaseRepo')
 const { protect } = require('../middleware/auth')
 const { BRANCH_INACTIVE_MESSAGE, isBranchActive } = require('../utils/branchSubscription')
 const { DEFAULT_SERVICES } = require('../utils/serviceCatalog')
+const { ROLE_PERMISSIONS, PERMISSIONS } = require('../utils/permissions')
+const notifySvc = require('../services/notificationService')
 
 const router = express.Router()
 
@@ -16,6 +18,15 @@ const signToken = (id) =>
 
 const sendToken = (user, statusCode, res) => {
   const token = signToken(user.id)
+
+  // Set HttpOnly cookie for enhanced security against XSS token theft
+  res.cookie('sq_token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  })
+
   res.status(statusCode).json({
     token,
     user,
@@ -47,6 +58,14 @@ const safeUser = (user) => {
   delete copy.password
   return copy
 }
+
+router.get('/permissions', protect, (req, res) => {
+  res.json({
+    permissions: PERMISSIONS,
+    rolePermissions: ROLE_PERMISSIONS,
+    userPermissions: ROLE_PERMISSIONS[req.user.role] || [],
+  })
+})
 
 router.post(
   '/register',
@@ -161,6 +180,24 @@ router.post(
             branchExpired: true,
             subscription_status: status,
           })
+        }
+      }
+
+      if (user.role === 'customer') {
+        const activeTickets = await findMany('queues', {
+          filters: [['user', 'eq', user.id], ['status', 'in', ['waiting', 'called', 'serving', 'checked_in']]],
+          order: { column: 'created_at', ascending: false },
+          limit: 1,
+        })
+        const activeTicket = activeTickets[0]
+        if (activeTicket) {
+          const branch = await findById('branches', activeTicket.branch)
+          const result = await notifySvc.sendQueueTicketEmail({
+            to: user.email,
+            ticket: activeTicket,
+            branch,
+          })
+          if (result.error) console.error('[notification] login queue email failed:', result.error)
         }
       }
 
