@@ -7,12 +7,9 @@ require('dotenv').config()
 const bcrypt = require('bcryptjs')
 const connectDB = require('./config/db')
 const { findMany, deleteById, insert } = require('./lib/supabaseRepo')
-const { getSeedServicesForBranch } = require('./utils/serviceCatalog')
+const { DEFAULT_HOURS, seedServices } = require('./utils/common')
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-
-const defaultHours = () =>
-  DAYS.map((day) => ({ day, open: day !== 'Sunday', from: '08:00', to: '17:00' }))
+const defaultHours = () => DEFAULT_HOURS.map((hours) => ({ ...hours }))
 
 const hospitalDepts = () => [
   { id: 'consultation', name: 'Consultation', duration: 20, active: true },
@@ -50,25 +47,6 @@ const SEED_USERS = {
   customer: { email: 'customer@smartqueue.com', password: 'Customer@123' },
 }
 
-async function seedServices(branchId, servicesOrBranch) {
-  const services = Array.isArray(servicesOrBranch)
-    ? servicesOrBranch
-    : getSeedServicesForBranch(servicesOrBranch)
-
-  for (let i = 0; i < services.length; i += 1) {
-    const s = services[i]
-    await insert('services', {
-      branch_id: branchId,
-      name: s.name,
-      description: s.description || '',
-      duration: s.duration || 10,
-      is_active: s.active !== false,
-      sort_order: i,
-      meta: {},
-    })
-  }
-}
-
 async function clearTable(table) {
   const rows = await findMany(table, { select: 'id' })
   for (const row of rows) {
@@ -77,16 +55,18 @@ async function clearTable(table) {
 }
 
 async function seed() {
-  await connectDB()
+  // This script wipes every table. Never let it run against a live database by accident.
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DESTRUCTIVE_SEED !== 'true') {
+    throw new Error('Refusing to seed in production. Set ALLOW_DESTRUCTIVE_SEED=true if you really mean it.')
+  }
+
+  if (!(await connectDB())) throw new Error('Database is not configured.')
 
   console.log('Clearing existing data...')
-  await Promise.all([
-    clearTable('notifications'),
-    clearTable('queues'),
-    clearTable('counters'),
-    clearTable('users'),
-    clearTable('branches'),
-  ])
+  // Children first, so foreign keys never block a delete.
+  for (const table of ['notifications', 'queues', 'counters', 'services', 'users', 'branches']) {
+    await clearTable(table)
+  }
 
   console.log('Creating branches...')
   const now = new Date()

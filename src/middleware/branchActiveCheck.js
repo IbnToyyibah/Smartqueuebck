@@ -1,8 +1,10 @@
-const { findById, updateById } = require('../lib/supabaseRepo')
+const { getEffectiveBranchStatus, isActiveSubscriptionStatus } = require('../utils/branchSubscription')
 
+// Blocks public actions (e.g. joining a queue) against branches whose subscription lapsed.
 const branchActiveCheck = async (req, res, next) => {
   try {
     const branchId =
+      req.body?.branch_id ||
       req.body?.branchId ||
       req.params?.branchId ||
       req.query?.branchId
@@ -12,25 +14,10 @@ const branchActiveCheck = async (req, res, next) => {
       return res.status(400).json({ message: 'branchId is required.' })
     }
 
-    const branch = await findById('branches', branchId)
+    const { branch, status } = await getEffectiveBranchStatus(String(branchId))
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
 
-    const now = new Date()
-    let status = branch.subscription_status
-    const trialEnd = branch.trial_end_date
-    const subscriptionEnd = branch.subscription_end_date
-
-    if (status === 'trial' && trialEnd && now > new Date(trialEnd)) {
-      status = 'expired'
-      await updateById('branches', branchId, { subscription_status: 'expired' })
-    }
-
-    if (status === 'active' && subscriptionEnd && now > new Date(subscriptionEnd)) {
-      status = 'expired'
-      await updateById('branches', branchId, { subscription_status: 'expired' })
-    }
-
-    if (status === 'expired' || status === 'suspended') {
+    if (!isActiveSubscriptionStatus(status)) {
       return res.status(402).json({
         message: `${branch.name}'s subscription has expired. Please try another branch or contact your Branch Admin.`,
         branchExpired: true,

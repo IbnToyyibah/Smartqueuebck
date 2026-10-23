@@ -5,9 +5,11 @@ const { body, validationResult } = require('express-validator')
 const { findMany, findById, insert, updateById } = require('../lib/supabaseRepo')
 const { protect } = require('../middleware/auth')
 const { BRANCH_INACTIVE_MESSAGE, isBranchActive } = require('../utils/branchSubscription')
-const { DEFAULT_SERVICES } = require('../utils/serviceCatalog')
-const { ROLE_PERMISSIONS, PERMISSIONS } = require('../utils/permissions')
+const { getSeedServicesForBranch } = require('../utils/serviceCatalog')
+const { getPermissionsForRole, ROLE_PERMISSIONS, PERMISSIONS } = require('../utils/permissions')
+const { DEFAULT_HOURS, safeUser, normalizeEmail, seedServices } = require('../utils/common')
 const notifySvc = require('../services/notificationService')
+const queueSvc = require('../services/queueService')
 
 const router = express.Router()
 
@@ -24,7 +26,7 @@ const sendToken = (user, statusCode, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: TOKEN_MAX_AGE_MS,
   })
 
   res.status(statusCode).json({
@@ -33,37 +35,31 @@ const sendToken = (user, statusCode, res) => {
   })
 }
 
-const DEFAULT_HOURS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(
-  (day) => ({ day, open: day !== 'Sunday', from: '08:00', to: '17:00' })
-)
-
-const seedDefaultServices = async (branchId, services = DEFAULT_SERVICES) => {
-  for (let i = 0; i < services.length; i += 1) {
-    const service = services[i]
-    await insert('services', {
-      branch_id: branchId,
-      name: service.name,
-      description: service.description || '',
-      duration: service.duration ?? 10,
-      is_active: service.active !== false,
-      sort_order: i,
-      meta: {},
-    })
-  }
+// Keep the cookie lifetime in line with JWT_EXPIRES_IN ("7d", "12h", "3600"...).
+const parseDuration = (value) => {
+  const match = String(value || '').trim().match(/^(\d+)\s*([smhd]?)$/i)
+  if (!match) return 7 * 24 * 60 * 60 * 1000
+  const unit = { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[match[2].toLowerCase()]
+  return Number(match[1]) * unit * 1000
 }
+const TOKEN_MAX_AGE_MS = parseDuration(process.env.JWT_EXPIRES_IN || '7d')
 
-const safeUser = (user) => {
-  if (!user) return null
-  const copy = { ...user }
-  delete copy.password
-  return copy
+// Older accounts were stored with express-validator's Gmail normalisation (dots removed),
+// newer ones are only lower-cased. Look up both so every account can still sign in.
+const emailCandidates = (email) => {
+  const lower = normalizeEmail(email)
+  const [local, domain] = lower.split('@')
+  const legacy = ['gmail.com', 'googlemail.com'].includes(domain)
+    ? `${local.split('+')[0].replace(/\./g, '')}@gmail.com`
+    : lower
+  return [...new Set([lower, legacy])]
 }
 
 router.get('/permissions', protect, (req, res) => {
   res.json({
     permissions: PERMISSIONS,
     rolePermissions: ROLE_PERMISSIONS,
-    userPermissions: ROLE_PERMISSIONS[req.user.role] || [],
+    userPermissions: getPermissionsForRole(req.user.role),
   })
 })
 
@@ -71,7 +67,7 @@ router.post(
   '/register',
   [
     body('name').trim().notEmpty().withMessage('Name is required.'),
-    body('email').isEmail().withMessage('Valid email is required.').normalizeEmail(),
+    body('email').trim().isEmail().withMessage('Valid email is required.'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
     body('role')
       .optional()
@@ -84,15 +80,13 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ message: errors.array()[0].msg })
 
       const {
-        name, email, password, phone, role, notify_channel, branch,
+        name, password, phone, role, notify_channel,
         cardNumber, cardExpiry, cardCvc, cardHolder, orgName,
         branchCity, branchAddress, branchCategory,
       } = req.body
+      const email = normalizeEmail(req.body.email)
 
-      if (role === 'staff') return res.status(400).json({ message: 'Counter agents are created by your Branch Admin.' })
-      if (role === 'super_admin') return res.status(403).json({ message: 'Super Admin accounts cannot be self-registered.' })
-
-      const existing = await findMany('users', { filters: [['email', 'eq', email]], limit: 1 })
+      const existing = await findMany('users', { filters: [['email', 'in', emailCandidates(email)]], limit: 1 })
       if (existing.length) return res.status(409).json({ message: 'An account with this email already exists.' })
 
       const assignedRole = role || 'customer'
@@ -129,7 +123,7 @@ router.post(
             card_expiry: cardExpiry,
           },
         })
-        await seedDefaultServices(createdBranch.id)
+        await seedServices(createdBranch.id, getSeedServicesForBranch(createdBranch))
       }
 
       const hashed = await bcrypt.hash(password, 12)
@@ -140,7 +134,8 @@ router.post(
         phone: phone || '',
         role: assignedRole,
         notify_channel: notify_channel || 'email',
-        branch: createdBranch?.id || branch || null,
+        // Customers are not tied to a branch; branch admins own the branch created above.
+        branch: createdBranch?.id || null,
         ...trial,
         status: 'active',
       })
@@ -155,7 +150,7 @@ router.post(
 router.post(
   '/login',
   [
-    body('email').isEmail().withMessage('Valid email required.').normalizeEmail(),
+    body('email').trim().isEmail().withMessage('Valid email required.'),
     body('password').notEmpty().withMessage('Password required.'),
   ],
   async (req, res, next) => {
@@ -163,10 +158,11 @@ router.post(
       const errors = validationResult(req)
       if (!errors.isEmpty()) return res.status(400).json({ message: errors.array()[0].msg })
 
-      const email = String(req.body.email || '').trim().toLowerCase()
+      const email = normalizeEmail(req.body.email)
       const { password } = req.body
-      const users = await findMany('users', { filters: [['email', 'eq', email]], limit: 1 })
-      const user = users[0]
+      const users = await findMany('users', { filters: [['email', 'in', emailCandidates(email)]], limit: 2 })
+      // Prefer an exact match if both the plain and legacy forms exist.
+      const user = users.find((u) => u.email === email) || users[0]
 
       if (!user || !(await bcrypt.compare(password, user.password))) {
         return res.status(401).json({ message: 'Invalid email or password.' })
@@ -184,12 +180,7 @@ router.post(
       }
 
       if (user.role === 'customer') {
-        const activeTickets = await findMany('queues', {
-          filters: [['user', 'eq', user.id], ['status', 'in', ['waiting', 'called', 'serving', 'checked_in']]],
-          order: { column: 'created_at', ascending: false },
-          limit: 1,
-        })
-        const activeTicket = activeTickets[0]
+        const [activeTicket] = await queueSvc.getUserTickets(user.id, queueSvc.ACTIVE_STATUSES, 1)
         if (activeTicket) {
           const branch = await findById('branches', activeTicket.branch)
           const result = await notifySvc.sendQueueTicketEmail({
@@ -210,8 +201,8 @@ router.post(
 
 router.get('/me', protect, async (req, res, next) => {
   try {
-    const users = await findMany('users', { filters: [['id', 'eq', req.user.id]], limit: 1 })
-    res.json({ user: safeUser(users[0]) })
+    const user = await findById('users', req.user.id)
+    res.json({ user: safeUser(user) })
   } catch (err) {
     next(err)
   }
@@ -222,6 +213,12 @@ router.patch('/me', protect, async (req, res, next) => {
     const allowed = ['name', 'phone', 'notify_channel']
     const updates = {}
     allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f] })
+    if (updates.notify_channel && !['email', 'sms', 'both'].includes(updates.notify_channel)) {
+      return res.status(400).json({ message: 'notify_channel must be email, sms or both.' })
+    }
+    if (updates.name !== undefined && !String(updates.name).trim()) {
+      return res.status(400).json({ message: 'Name cannot be empty.' })
+    }
     const user = await updateById('users', req.user.id, updates)
     res.json({ user: safeUser(user) })
   } catch (err) {
@@ -239,9 +236,8 @@ router.post('/change-password', protect, async (req, res, next) => {
       return res.status(400).json({ message: 'New password must be at least 8 characters.' })
     }
 
-    const users = await findMany('users', { filters: [['id', 'eq', req.user.id]], limit: 1 })
-    const user = users[0]
-    if (!(await bcrypt.compare(currentPassword, user.password))) {
+    const user = await findById('users', req.user.id)
+    if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
       return res.status(401).json({ message: 'Current password is incorrect.' })
     }
 

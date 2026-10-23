@@ -3,19 +3,19 @@ const { findById } = require('../lib/supabaseRepo')
 const { BRANCH_INACTIVE_MESSAGE, isBranchActive } = require('../utils/branchSubscription')
 const { hasPermission } = require('../utils/permissions')
 
+const BRANCH_ROLES = ['staff', 'branch_admin']
+
+const readCookieToken = (cookieHeader) => {
+  if (!cookieHeader) return null
+  const match = cookieHeader.match(/(?:^|;\s*)sq_token=([^;]+)/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
 const extractToken = (req) => {
   if (req.headers.authorization?.startsWith('Bearer ')) {
     return req.headers.authorization.split(' ')[1]
   }
-  // Check HttpOnly or standard cookie fallback
-  if (req.cookies?.sq_token) {
-    return req.cookies.sq_token
-  }
-  if (req.headers.cookie) {
-    const match = req.headers.cookie.match(/sq_token=([^;]+)/)
-    if (match) return match[1]
-  }
-  return null
+  return readCookieToken(req.headers.cookie)
 }
 
 const signUserPayload = (user) => ({
@@ -23,6 +23,7 @@ const signUserPayload = (user) => ({
   role: user.role,
   branch: user.branch,
   email: user.email,
+  phone: user.phone,
   name: user.name,
   status: user.status,
   notify_channel: user.notify_channel,
@@ -31,13 +32,23 @@ const signUserPayload = (user) => ({
   trial_active: user.trial_active,
 })
 
+const verifyToken = (token) => {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET)
+  } catch {
+    return null
+  }
+}
+
 const protect = async (req, res, next) => {
   const token = extractToken(req)
   if (!token) {
     return res.status(401).json({ message: 'Not authenticated. Token missing.' })
   }
+  const decoded = verifyToken(token)
+  if (!decoded) return res.status(401).json({ message: 'Invalid or expired token.' })
+
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
     const user = await findById('users', decoded.id)
     if (!user) return res.status(401).json({ message: 'User no longer exists.' })
     if (user.status === 'suspended') {
@@ -45,8 +56,9 @@ const protect = async (req, res, next) => {
     }
     req.user = signUserPayload(user)
     next()
-  } catch {
-    res.status(401).json({ message: 'Invalid or expired token.' })
+  } catch (err) {
+    // Database failures are server errors, not authentication failures.
+    next(err)
   }
 }
 
@@ -74,18 +86,19 @@ const requirePermission = (...requiredPermissions) => (req, res, next) => {
 
 const optionalAuth = async (req, res, next) => {
   const token = extractToken(req)
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET)
-      const user = await findById('users', decoded.id)
-      if (user && user.status !== 'suspended') req.user = signUserPayload(user)
-    } catch {}
+  const decoded = token && verifyToken(token)
+  if (!decoded) return next()
+  try {
+    const user = await findById('users', decoded.id)
+    if (user && user.status !== 'suspended') req.user = signUserPayload(user)
+    next()
+  } catch (err) {
+    next(err)
   }
-  next()
 }
 
 const requireActiveBranch = async (req, res, next) => {
-  if (!req.user || !['staff', 'branch_admin'].includes(req.user.role)) return next()
+  if (!req.user || !BRANCH_ROLES.includes(req.user.role)) return next()
   if (!req.user.branch) return next()
   try {
     const result = await isBranchActive(req.user.branch)
@@ -102,12 +115,17 @@ const requireActiveBranch = async (req, res, next) => {
   }
 }
 
-const requireOwnBranch = (req, res, next) => {
-  if (!req.user || req.user.role === 'super_admin') return next()
+/**
+ * Restricts staff and branch admins to their own branch.
+ * `paramName` is the route param that holds a *branch* id ("branchId" by default,
+ * "id" on /branches/:id routes). Routes whose :id is a counter/user/ticket id must
+ * check ownership against the loaded record instead.
+ */
+const ownBranch = (paramName = 'branchId') => (req, res, next) => {
+  if (!req.user || !BRANCH_ROLES.includes(req.user.role)) return next()
 
   const targetBranchId =
-    req.params?.branchId ||
-    req.params?.id ||
+    req.params?.[paramName] ||
     req.body?.branchId ||
     req.body?.branch ||
     req.query?.branchId ||
@@ -115,16 +133,20 @@ const requireOwnBranch = (req, res, next) => {
 
   if (!targetBranchId) return next()
 
-  if (['branch_admin', 'staff'].includes(req.user.role)) {
-    if (!req.user.branch || String(req.user.branch) !== String(targetBranchId)) {
-      return res.status(403).json({
-        message: 'You can only access or manage your own assigned branch.',
-      })
-    }
+  if (!req.user.branch || String(req.user.branch) !== String(targetBranchId)) {
+    return res.status(403).json({
+      message: 'You can only access or manage your own assigned branch.',
+    })
   }
-
   next()
 }
+
+const requireOwnBranch = ownBranch('branchId')
+
+// Returns true when the user may act on a record that belongs to `branchId`.
+const canAccessBranch = (user, branchId) =>
+  user?.role === 'super_admin' ||
+  (BRANCH_ROLES.includes(user?.role) && user.branch && String(user.branch) === String(branchId))
 
 module.exports = {
   protect,
@@ -133,5 +155,9 @@ module.exports = {
   optionalAuth,
   requireActiveBranch,
   requireOwnBranch,
+  ownBranch,
+  canAccessBranch,
   extractToken,
+  readCookieToken,
+  verifyToken,
 }
