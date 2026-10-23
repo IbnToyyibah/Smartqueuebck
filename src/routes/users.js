@@ -2,15 +2,11 @@ const express = require('express')
 const bcrypt = require('bcryptjs')
 const { protect, authorize, requireActiveBranch, requireOwnBranch } = require('../middleware/auth')
 const { findMany, insert, findById, updateById, deleteById } = require('../lib/supabaseRepo')
+const { safeUser, normalizeEmail, sameId } = require('../utils/common')
 
 const router = express.Router()
-
-const safeUser = (user) => {
-  if (!user) return null
-  const copy = { ...user }
-  delete copy.password
-  return copy
-}
+const ROLES = ['customer', 'staff', 'branch_admin', 'super_admin']
+const STATUSES = ['active', 'suspended']
 
 router.get('/', protect, authorize('super_admin'), async (req, res, next) => {
   try {
@@ -34,58 +30,72 @@ router.get('/branch/:branchId', protect, authorize('branch_admin', 'super_admin'
 
 router.post('/', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
   try {
-    const { name, email, password, phone, role, branch, notify_channel, status } = req.body
+    const { name, password, phone, role, branch, notify_channel, status } = req.body
+    const email = normalizeEmail(req.body.email)
     if (!name || !email || !password) return res.status(400).json({ message: 'name, email, password are required.' })
-    const assignedBranch = req.user.role === 'branch_admin' ? req.user.branch : branch
-    const assignedRole = req.user.role === 'branch_admin' ? 'staff' : (role || 'staff')
-    if (!assignedBranch) return res.status(400).json({ message: 'A branch is required to create a counter agent.' })
+    if (String(password).length < 8) return res.status(400).json({ message: 'Password must be at least 8 characters.' })
+
+    const isBranchAdmin = req.user.role === 'branch_admin'
+    const assignedRole = isBranchAdmin ? 'staff' : (role || 'staff')
+    if (!ROLES.includes(assignedRole)) return res.status(400).json({ message: 'Invalid role.' })
+    const assignedBranch = isBranchAdmin ? req.user.branch : branch
+    if (['staff', 'branch_admin'].includes(assignedRole) && !assignedBranch) {
+      return res.status(400).json({ message: 'A branch is required for counter agents and branch admins.' })
+    }
+
+    const existing = await findMany('users', { filters: [['email', 'eq', email]], limit: 1 })
+    if (existing.length) return res.status(409).json({ message: 'An account with this email already exists.' })
+
     const hashed = await bcrypt.hash(password, 12)
     const user = await insert('users', {
       name, email, password: hashed, phone: phone || '',
       role: assignedRole,
-      branch: assignedBranch,
+      branch: assignedBranch || null,
       notify_channel: notify_channel || 'email',
-      status: ['active', 'suspended'].includes(status) ? status : 'active',
+      status: STATUSES.includes(status) ? status : 'active',
     })
     res.status(201).json({ user: safeUser(user) })
   } catch (err) { next(err) }
 })
 
-router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, requireOwnBranch, async (req, res, next) => {
+router.patch('/:id', protect, authorize('super_admin', 'branch_admin'), requireActiveBranch, async (req, res, next) => {
   try {
-    const allowed = ['name', 'phone', 'role', 'branch', 'status', 'notify_channel']
     const updates = {}
-    allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f] })
+    ;['name', 'phone', 'role', 'branch', 'status', 'notify_channel'].forEach((f) => {
+      if (req.body[f] !== undefined) updates[f] = req.body[f]
+    })
+    if (updates.role && !ROLES.includes(updates.role)) return res.status(400).json({ message: 'Invalid role.' })
+    if (updates.status && !STATUSES.includes(updates.status)) return res.status(400).json({ message: 'Invalid status.' })
+
+    const target = await findById('users', req.params.id)
+    if (!target) return res.status(404).json({ message: 'User not found.' })
+
     if (req.user.role === 'branch_admin') {
       delete updates.role
       delete updates.branch
-      const target = await findById('users', req.params.id)
-      if (!target) return res.status(404).json({ message: 'User not found.' })
-      if (target.role !== 'staff' || String(target.branch) !== String(req.user.branch)) {
+      if (target.role !== 'staff' || !sameId(target.branch, req.user.branch)) {
         return res.status(403).json({ message: 'You can only manage counter agents for your own branch.' })
       }
     }
-    const user = await updateById('users', req.params.id, updates)
-    if (!user) return res.status(404).json({ message: 'User not found.' })
+    if (sameId(target.id, req.user.id) && (updates.role || updates.status === 'suspended')) {
+      return res.status(400).json({ message: 'You cannot change your own role or suspend yourself.' })
+    }
 
-    // If user was suspended or role/branch changed, immediately revoke active socket sessions!
+    const user = await updateById('users', target.id, updates)
+
+    // Suspension or a role/branch change revokes live socket sessions immediately.
     if (updates.status === 'suspended' || updates.role || updates.branch) {
-      const io = req.app.get('io')
-      if (io && typeof io.revokeUserSockets === 'function') {
-        io.revokeUserSockets(req.params.id)
-      }
+      req.app.get('io')?.revokeUserSockets(target.id)
     }
 
     res.json({ user: safeUser(user) })
   } catch (err) { next(err) }
 })
 
-router.delete('/:id', protect, authorize('super_admin'), requireOwnBranch, async (req, res, next) => {
+router.delete('/:id', protect, authorize('super_admin'), async (req, res, next) => {
   try {
-    const io = req.app.get('io')
-    if (io && typeof io.revokeUserSockets === 'function') {
-      io.revokeUserSockets(req.params.id)
-    }
+    if (sameId(req.params.id, req.user.id)) return res.status(400).json({ message: 'You cannot delete your own account.' })
+    req.app.get('io')?.revokeUserSockets(req.params.id)
     await deleteById('users', req.params.id)
     res.json({ message: 'User removed.' })
   } catch (err) { next(err) }
