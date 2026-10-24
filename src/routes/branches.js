@@ -171,17 +171,23 @@ router.patch('/:id/subscription', protect, authorize('super_admin'), async (req,
       const date = new Date(value)
       return Number.isNaN(date.getTime()) ? null : date.toISOString()
     }
-    if (req.body.subscription_status) {
-      if (!['trial', 'active', 'expired', 'suspended'].includes(req.body.subscription_status)) {
+    // The admin UI sends camelCase (subscriptionStatus); accept both spellings.
+    const subscriptionStatus = req.body.subscription_status ?? req.body.subscriptionStatus
+    if (subscriptionStatus) {
+      if (!['trial', 'active', 'expired', 'suspended'].includes(subscriptionStatus)) {
         return res.status(400).json({ message: 'Invalid subscription_status.' })
       }
-      updates.subscription_status = req.body.subscription_status
+      updates.subscription_status = subscriptionStatus
     }
-    for (const field of ['subscription_end_date', 'trial_end_date']) {
-      if (!req.body[field]) continue
-      const iso = toIso(req.body[field])
+    for (const [field, camel] of [['subscription_end_date', 'subscriptionEndDate'], ['trial_end_date', 'trialEndDate']]) {
+      const value = req.body[field] ?? req.body[camel]
+      if (!value) continue
+      const iso = toIso(value)
       if (!iso) return res.status(400).json({ message: `${field} is not a valid date.` })
       updates[field] = iso
+    }
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ message: 'Nothing to update.' })
     }
     const branch = await updateById('branches', req.params.id, updates)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
