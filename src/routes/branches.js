@@ -1,6 +1,6 @@
 const express = require('express')
 const { protect, authorize, optionalAuth, requireActiveBranch, ownBranch, canAccessBranch } = require('../middleware/auth')
-const { findMany, findById, insert, updateById, deleteById } = require('../lib/supabaseRepo')
+const { findMany, findById, insert, updateById, updateWhere, deleteById, deleteWhere } = require('../lib/supabaseRepo')
 const { getSeedServicesForBranch } = require('../utils/serviceCatalog')
 const { DEFAULT_HOURS, toSafeNumber, seedServices } = require('../utils/common')
 
@@ -110,6 +110,9 @@ router.patch('/:id', protect, authorize('branch_admin', 'super_admin'), requireA
     if (req.user.role === 'super_admin' && req.body.billing_details !== undefined) {
       updates.billing_details = req.body.billing_details
     }
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ message: 'Nothing to update.' })
+    }
     const branch = await updateById('branches', req.params.id, updates)
     if (!branch) return res.status(404).json({ message: 'Branch not found.' })
     res.json({ branch })
@@ -157,9 +160,30 @@ router.delete('/services/:serviceId', protect, authorize('branch_admin', 'super_
   }
 })
 
+// Rows in other tables point at the branch, so remove or detach them first;
+// otherwise Postgres rejects the delete with a foreign-key violation.
 router.delete('/:id', protect, authorize('super_admin'), async (req, res, next) => {
   try {
-    await deleteById('branches', req.params.id)
+    const branchId = req.params.id
+    const branch = await findById('branches', branchId, 'id')
+    if (!branch) return res.status(404).json({ message: 'Branch not found.' })
+
+    const tickets = await findMany('queues', { select: 'id', filters: [['branch', 'eq', branchId]] })
+    const ticketIds = tickets.map((t) => t.id)
+    if (ticketIds.length) {
+      await updateWhere('counters', [['branch', 'eq', branchId]], { serving: null })
+      for (let i = 0; i < ticketIds.length; i += 200) {
+        await deleteWhere('notifications', [['ticket', 'in', ticketIds.slice(i, i + 200)]])
+      }
+    }
+    await deleteWhere('queues', [['branch', 'eq', branchId]])
+    await deleteWhere('counters', [['branch', 'eq', branchId]])
+    await deleteWhere('services', [['branch_id', 'eq', branchId]])
+    await deleteWhere('branch_queue_sequences', [['branch_id', 'eq', branchId]])
+    // Staff and branch admins lose their workplace: detach and suspend rather than delete accounts.
+    await updateWhere('users', [['branch', 'eq', branchId]], { branch: null, status: 'suspended' })
+
+    await deleteById('branches', branchId)
     res.json({ message: 'Branch removed.' })
   } catch (err) { next(err) }
 })
