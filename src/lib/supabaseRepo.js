@@ -92,6 +92,14 @@ const allocateNextSequence = async (branchId) => {
   return data
 }
 
+// Bulk delete every row matching the filters. Refuses to run without a filter.
+const deleteWhere = async (table, filters) => {
+  if (!filters.length) throw new Error('deleteWhere requires at least one filter.')
+  const q = applyFilters(db().from(table).delete(), table, filters)
+  const { error } = await q
+  if (error) throw error
+}
+
 module.exports = {
   db,
   findById,
@@ -100,5 +108,6 @@ module.exports = {
   updateById,
   updateWhere,
   deleteById,
+  deleteWhere,
   allocateNextSequence,
 }
